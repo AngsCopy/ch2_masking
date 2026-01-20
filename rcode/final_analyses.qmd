@@ -1,0 +1,248 @@
+---
+title: "Masking analyses"
+author: "Connor Wessel"
+execute: 
+  echo: false
+  message: false
+  warning: false
+  include: false
+---
+
+
+# Data preprocessing
+```{r}
+# Load packages
+library(tidyverse)
+library(brms)
+library(ggtext)
+library(rstudioapi)
+
+# Relative working directory
+active_wd <- function(x, output = FALSE) {
+    rdir <- dirname(rstudioapi::getActiveDocumentContext()$path)
+    rdir <- sub("[^/]*$", "", rdir)
+    rdir <- paste0(rdir, x)
+    setwd(rdir)
+    if (output == TRUE) {
+        return(getwd())
+    }
+}
+active_wd("data")
+
+# Load data
+library(tidyverse)
+library(brms)
+library(ggtext)
+data <- read_csv("full_data.csv")
+# data <- read_csv("pilot_data.csv")
+reversals <- 4 # Specify how many reversals we are averaging across
+```
+
+```{r}
+# Select final 4 reversals in each staircase for each Participant
+last_revs <- data.frame()
+for (i in unique(data$Participant)) {
+  for (j in unique(data$start_id)) {
+    for (k in unique(data$type)) {
+      for (l in unique(data$envelope_1)) {
+        for (m in unique(data$repetition)) {
+          for (n in unique(data$direction)) {
+            for (o in unique(data$offset)) {
+              rev = subset(data, Participant == i & type == k & envelope_1 == l & repetition == m & direction == n & offset == o & l_reversal == 1)
+              if (!j %in% rev$start_id) next
+              rev = subset(rev, start_id == j)
+              num = length(rev$l_reversal) - reversals
+              rev = rev[-c(1:num),]
+              last_revs <- rbind(last_revs, rev)
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+```{r}
+# Categorise each reversal
+k = 1
+for (i in 1:nrow(last_revs)) {
+  if (k > reversals) k = 1
+  last_revs$trial_num[i] <- k
+  k = k + 1
+}
+```
+
+```{r}
+# Group and condense response/reversal data
+revs <- last_revs %>% 
+  group_by(Participant, start_id, direction, envelope_1, type, repetition, offset, trial_num) %>% 
+  summarise("Level" = mean(second - first)) %>% 
+  mutate("trial_num" = as.integer(trial_num), "start_id" = factor(start_id)) %>% 
+  arrange(Participant, start_id, direction, envelope_1, type, repetition, trial_num)
+```
+
+```{r}
+# Calculate PSE for each standard and envelope for each participant (and Z scores)
+pse <- revs %>% 
+  group_by(Participant, start_id, envelope_1, type, offset, repetition) %>% 
+  summarise("PSE" = mean(Level))
+pse$PSEZ <- ((pse$PSE - mean(pse$PSE)) / sd(pse$PSE))
+
+pse$PSEtotal <- 0
+pse$standard <- 0
+for (i in 1:length(unique(pse$envelope_1))) {
+  for (j in 1:length(unique(pse$start_id))) {
+    e <- unique(pse$envelope_1)[i]
+    if (!j %in% unique(pse$start_id[pse$envelope_1 == e])) next
+    pse$PSEtotal[pse$envelope_1 == unique(pse$envelope_1)[i] & pse$start_id == j] <- data$first[data$envelope_1 == unique(pse$envelope_1)[i] & data$start_id == j] + pse$PSE[pse$envelope_1 == unique(pse$envelope_1)[i] & pse$start_id == j]
+    pse$standard[pse$envelope_1 == unique(pse$envelope_1)[i] & pse$start_id == j] <- data$first[data$envelope_1 == unique(pse$envelope_1)[i] & data$start_id == j]
+  }
+}
+
+# Convert relevant columns into factors
+pse$Participant <- factor(pse$Participant)
+pse$envelope_1 <- factor(pse$envelope_1)
+pse$offset <- factor(pse$offset)
+```
+
+# Inferential analyses
+
+```{r}
+# Inferential analyses
+
+# Set model priors
+#   Note - use pilot data in data preprocessing to look at model parameters that informed these priors.
+priors <- c(
+  prior(normal(-28.7, 0.593), class = "Intercept"),
+  prior(normal(-32, 0.69), class = "b", coef = "envelope_1perc"),
+  prior(normal(0.472, 0.692), class = "b", coef = "envelope_1revperc"),
+  prior(normal(-20.4, 0.693), class = "b", coef = "offset0.405"),
+  prior(normal(14.8, 0.974), class = "b", coef = "envelope_1perc:offset0.405"),
+  prior(normal(-0.276, 0.978), class = "b", coef = "envelope_1revperc:offset0.405"),
+  prior(normal(3.98, 0.157), class = "sigma"),
+  prior(normal(2.69, 0.334), class = "sd", coef = "Intercept", group = "Participant")
+)
+
+# Uniform priors for pilot data
+# priors <- c(
+#   prior(uniform(-40, 40), lb = -40, ub = 40, class = "b")
+# )
+
+# Run model
+model <- brm(
+  PSEtotal ~ envelope_1 * offset + (1|Participant),
+  data = pse,
+  prior = priors,
+  family = gaussian(),
+  chains = 10,
+  cores = 10,
+  iter = 10000,
+  warmup = 2000,
+  sample_prior = "yes",
+  save_pars = save_pars(all = TRUE),
+  seed = 1
+)
+
+# Extract posterior draws for each hypothesis
+test <- hypothesis(
+  model,
+  c(
+    "abs(((2*envelope_1perc + envelope_1perc:offset0.405) / 2)) > 0",
+    "abs(envelope_1perc:offset0.405) > 0",
+    "offset0.405 > envelope_1perc",
+    "((2*envelope_1revperc + envelope_1revperc:offset0.405) / 2) = 0"
+  )
+  )
+```
+
+# Figures
+
+## Figure 3
+
+```{r}
+# Figure 3 - Example staircase
+data %>% 
+  filter(Participant == 1 & envelope_1 == "perc" & offset == 0.405) %>% 
+  ggplot(aes(trial_num, second)) +
+  geom_path(alpha = 0.3) +
+  geom_point(aes(color = factor(l_reversal))) +
+  theme_classic() +
+  geom_hline(aes(yintercept = first), 
+             linetype = 1, 
+             alpha = 0.3) +
+  geom_hline(data = pse[pse$Participant == i & pse$envelope_1 == "perc" & pse$offset == 0.405,], 
+             mapping = aes(yintercept = PSEtotal), 
+             color = "purple", 
+             alpha = 0.5,
+             linetype = 2) +
+  geom_text(data = pse[pse$Participant == i & pse$envelope_1 == "perc" & pse$offset == 0.405,], 
+            aes(label = paste("Delta*dB==", PSE)), 
+            x = 19, 
+            y = -75,
+            hjust = "left",
+            inherit.aes = FALSE,
+            parse = TRUE) +
+  xlab("Trials") +
+  ylab("Target intensity (dB)") +
+  ylim(c(-80,0)) +
+  scale_color_manual("Reversal",
+                     labels = c("No", "Yes"),
+                     values = c("blue", "red")) +
+  theme(legend.position = "none")
+# ggsave("staircase_p1.svg", width = 6, height = 4)
+```
+
+## Figure 4
+
+```{r}
+# Figure 4 - Means and standard errors
+ebd <- pse |> 
+  group_by(envelope_1, offset) |> 
+  summarise(m = mean(PSEtotal), se = sd(PSEtotal) / sqrt(length(PSEtotal))) |> 
+  mutate(l = m - se, u = m + se)
+
+pd <- position_dodge(0.2)
+ebd |> 
+  ggplot(aes(
+    x = factor(envelope_1, levels = c("flat", "perc", "revperc"), labels = c("Flat", "Percussive", "Reverse percussive")),
+    y = m,
+    ymin = l,
+    ymax = u,
+    color = factor(offset)
+  )) +
+  geom_errorbar(width = 0.6, position = pd, linewidth = 0.3) +
+  geom_point(pch = 21, fill = "white", position = pd, size = 0.7) +
+  theme_classic() +
+  labs(x = "Masker envelope", y = "Threshold (dB)") +
+  scale_color_manual("Masking condition", values = c("#ff4e00", "#00b1ff"), labels = c("Simultaneous", "Forward")) +
+  theme(legend.position = "right", text = element_text(size = 10), axis.text.x = element_markdown()) +
+  scale_x_discrete(
+    labels = \(x) glue::glue("<img src='{x}.png' height=30 />")
+  )
+# ggsave("errorbar.svg", width = 6, height = 4.5)
+```
+
+## Figure 5
+
+```{r}
+# Figure 5 - Beta coefficients
+coefs <- data.frame(test$hypothesis)
+coefs$Hypothesis <- as.factor(1:4)
+levels(coefs$Hypothesis) <- paste0("H[",1:4,"]")
+levels(coefs$Hypothesis)[4] <- "Control"
+r2 <- bayes_R2(model)[1]
+
+coefs[1:4,] |> 
+    ggplot(aes(x = Estimate, y = Hypothesis)) +
+    geom_vline(xintercept = 0, linetype = 2, alpha = 0.5) +
+    geom_errorbar(aes(xmin = `CI.Lower`, xmax = `CI.Upper`), width = 0.6) +
+    geom_point(pch = 21, fill = "white") +
+    theme_classic() +
+    scale_y_discrete(limits = levels(coefs$Hypothesis), labels = parse(text = levels(coefs$Hypothesis))) +
+    labs(x = expression(hat(beta))) +
+    annotate("text", x = 24, y = 4, label = paste0("R^2 == ", round(r2, 2)), parse = TRUE, size = 4.2) +
+    xlim(c(0, 27)) +
+    coord_flip()
+# ggsave("coefs5.svg", width = 6, height = 4)
+```
