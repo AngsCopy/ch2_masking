@@ -30,9 +30,6 @@ active_wd <- function(x, output = FALSE) {
 active_wd("data")
 
 # Load data
-library(tidyverse)
-library(brms)
-library(ggtext)
 data <- read_csv("full_data.csv")
 # data <- read_csv("pilot_data.csv")
 reversals <- 4 # Specify how many reversals we are averaging across
@@ -161,6 +158,7 @@ test <- hypothesis(
 ## Figure 3
 
 ```{r}
+active_wd("rcode/figures")
 # Figure 3 - Example staircase
 data %>% 
   filter(Participant == 1 & envelope_1 == "perc" & offset == 0.405) %>% 
@@ -177,7 +175,7 @@ data %>%
              alpha = 0.5,
              linetype = 2) +
   geom_text(data = pse[pse$Participant == i & pse$envelope_1 == "perc" & pse$offset == 0.405,], 
-            aes(label = paste("Delta*dB==", PSE)), 
+            aes(label = paste("Threshold~(dB)==", PSEtotal)), 
             x = 19, 
             y = -75,
             hjust = "left",
