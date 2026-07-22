@@ -195,6 +195,7 @@ data %>%
 
 ```{r}
 # Figure 4 - Means and standard errors
+active_wd("rcode/figures")
 ebd <- pse |> 
   group_by(envelope_1, offset) |> 
   summarise(m = mean(PSEtotal), se = sd(PSEtotal) / sqrt(length(PSEtotal))) |> 
@@ -225,6 +226,7 @@ ebd |>
 
 ```{r}
 # Figure 5 - Beta coefficients
+active_wd("rcode/figures")
 coefs <- data.frame(test$hypothesis)
 coefs$Hypothesis <- as.factor(1:4)
 levels(coefs$Hypothesis) <- paste0("H[",1:4,"]")
